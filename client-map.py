@@ -39,8 +39,7 @@ def get_geocode(query, api_key=OPEN_CAGE_API_KEY):
         else:
             return None, None
     except Exception as e:
-        st.error(f"Error geocoding {query}: {e}")
-        return None, None
+        return None, None  # Fail silently, prevent API errors from stopping the app
 
 # =============================================================================
 # Main App
@@ -49,10 +48,9 @@ def get_geocode(query, api_key=OPEN_CAGE_API_KEY):
 def main():
     st.title("Clients TESSAN")
 
-    # Load data and drop rows missing an Address
+    # Load data
     data = load_data()
-    data = data.dropna(subset=['Address'])
-    
+
     # ----------------------------------------------------------------------
     # Sidebar: Multi-Select Department Filter with Search
     # ----------------------------------------------------------------------
@@ -61,31 +59,44 @@ def main():
     # Get unique departments from data
     departments = sorted(data['AdministrativeArea2'].dropna().unique().tolist())
 
-    # Multi-select filter: all departments selected by default
+    # Multi-select filter: No department selected by default
     selected_departments = st.sidebar.multiselect(
         "Sélectionnez un ou plusieurs départements",
         options=departments,
-        default=[], #No preselected departments
+        default=[],  # No preselected departments
     )
 
-    # Filter data based on selected departments
-    if selected_departments:
-        data = data[data['AdministrativeArea2'].isin(selected_departments)]
+    # Wait for the user to select at least one department
+    if not selected_departments:
+        st.info("Veuillez sélectionner au moins un département pour afficher la carte.")
+        return
+
+    # Apply filter to data
+    filtered_data = data[data['AdministrativeArea2'].isin(selected_departments)]
 
     # If no data remains after filtering, notify the user
-    if data.empty:
+    if filtered_data.empty:
         st.warning("Aucune donnée disponible après application du filtre.")
         return
 
     # ----------------------------------------------------------------------
-    # Geocode Addresses (only for filtered data)
+    # Geocode Addresses (AFTER filtering)
     # ----------------------------------------------------------------------
-    data[['lat', 'lng']] = data['Address'].apply(lambda x: pd.Series(get_geocode(x)))
-    
-    # Remove rows where geocoding failed
-    data = data.dropna(subset=['lat', 'lng'])
+    if 'lat' not in filtered_data.columns or 'lng' not in filtered_data.columns:
+        filtered_data['lat'], filtered_data['lng'] = None, None
 
-    if data.empty:
+    missing_coords = filtered_data[filtered_data[['lat', 'lng']].isnull().any(axis=1)]
+
+    if not missing_coords.empty:
+        st.info(f"Geocoding {len(missing_coords)} addresses, please wait...")
+        filtered_data.loc[missing_coords.index, ['lat', 'lng']] = missing_coords['Address'].apply(
+            lambda x: pd.Series(get_geocode(x))
+        )
+
+    # Remove rows where geocoding failed
+    filtered_data = filtered_data.dropna(subset=['lat', 'lng'])
+
+    if filtered_data.empty:
         st.warning("Aucune donnée valide après géocodage.")
         return
 
@@ -98,8 +109,8 @@ def main():
     departements_geojson = requests.get(geojson_url).json()
 
     # Center the map on the average location of the clients
-    average_lat = data['lat'].mean()
-    average_lon = data['lng'].mean()
+    average_lat = filtered_data['lat'].mean()
+    average_lon = filtered_data['lng'].mean()
     folium_map = folium.Map(location=[average_lat, average_lon], zoom_start=6)
 
     # Add GeoJSON overlay for French departments
@@ -115,7 +126,7 @@ def main():
     ).add_to(folium_map)
 
     # Add markers for each client
-    for _, row in data.iterrows():
+    for _, row in filtered_data.iterrows():
         popup_content = f"""
         <b>Name:</b> {row['Name']}<br>
         <b>Address:</b> {row['Address']}<br>
@@ -151,7 +162,7 @@ def main():
     # Display Data Table
     # ----------------------------------------------------------------------
     st.subheader("Tableau des Données")
-    st.dataframe(data[['Name', 'Address', 'AdministrativeArea2', 'lat', 'lng']], height=300)
+    st.dataframe(filtered_data[['Name', 'Address', 'AdministrativeArea2', 'lat', 'lng']], height=300)
 
 if __name__ == '__main__':
     main()
