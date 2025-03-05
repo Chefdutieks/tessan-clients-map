@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 import requests
 import folium
-import os
+from streamlit_folium import folium_static
 from opencage.geocoder import OpenCageGeocode
 
 # Replace with your own OpenCage API key
@@ -53,47 +53,46 @@ def main():
     data = load_data()
     data = data.dropna(subset=['Address'])
     
-    # -----------------------------------------------------------------------------
-    # Sidebar: Filtering BEFORE geocoding
-    # -----------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # Sidebar: Multi-Select Department Filter with Search
+    # ----------------------------------------------------------------------
     st.sidebar.header("Filtre")
-    
-    # Get unique values for filtering from the CSV data
-    # For example, filter by department ("AdministrativeArea2")
+
+    # Get unique departments from data
     departments = sorted(data['AdministrativeArea2'].dropna().unique().tolist())
-    
-    placeholder = "Veuillez choisir un département"
-    department_options = [placeholder] + departments
-    selected_department = st.sidebar.selectbox("Sélectionnez un département", department_options)
-    
-    # If the placeholder is still selected, show an info message and stop
-    if selected_department == placeholder:
-        st.info("Veuillez choisir un département pour continuer.")
-        st.stop()
 
-    data = data[data['AdministrativeArea2'] == selected_department]
+    # Multi-select filter: all departments selected by default
+    selected_departments = st.sidebar.multiselect(
+        "Sélectionnez un ou plusieurs départements",
+        options=departments,
+        default=[], #No preselected departments
+    )
 
-    # If no data remains after filtering, notify the user and exit
+    # Filter data based on selected departments
+    if selected_departments:
+        data = data[data['AdministrativeArea2'].isin(selected_departments)]
+
+    # If no data remains after filtering, notify the user
     if data.empty:
-        st.warning("No data available for the selected filter.")
+        st.warning("Aucune donnée disponible après application du filtre.")
         return
 
-    # -----------------------------------------------------------------------------
-    # Geocode Addresses (only for the filtered data)
-    # -----------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # Geocode Addresses (only for filtered data)
+    # ----------------------------------------------------------------------
     data[['lat', 'lng']] = data['Address'].apply(lambda x: pd.Series(get_geocode(x)))
     
     # Remove rows where geocoding failed
     data = data.dropna(subset=['lat', 'lng'])
-    
+
     if data.empty:
-        st.warning("No valid geocoding results for the selected data.")
+        st.warning("Aucune donnée valide après géocodage.")
         return
 
-    # -----------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     # Build and Display the Map using Folium
-    # -----------------------------------------------------------------------------
-    
+    # ----------------------------------------------------------------------
+
     # Load French departments GeoJSON
     geojson_url = 'https://france-geojson.gregoiredavid.fr/repo/departements.geojson'
     departements_geojson = requests.get(geojson_url).json()
@@ -129,21 +128,30 @@ def main():
         ).add_to(folium_map)
 
     # Save the map as an HTML file
-    map_filename = 'client_map.html'
+    map_filename = "client_map.html"
     folium_map.save(map_filename)
 
-    # Read and display the saved HTML map in the Streamlit app
-    with open(map_filename, 'r', encoding='utf-8') as file:
+    # Display the Folium map in Streamlit
+    folium_static(folium_map)
+
+    # ----------------------------------------------------------------------
+    # Download Button for the Map
+    # ----------------------------------------------------------------------
+    with open(map_filename, "r", encoding="utf-8") as file:
         html_data = file.read()
 
     st.download_button(
-        label="Download Map",
+        label="Télécharger la carte",
         data=html_data,
-        file_name=map_filename,
+        file_name="client_map.html",
         mime="text/html",
     )
 
-    st.components.v1.html(html_data, height=600, scrolling=True)
+    # ----------------------------------------------------------------------
+    # Display Data Table
+    # ----------------------------------------------------------------------
+    st.subheader("Tableau des Données")
+    st.dataframe(data[['Name', 'Address', 'AdministrativeArea2', 'lat', 'lng']], height=300)
 
 if __name__ == '__main__':
     main()
