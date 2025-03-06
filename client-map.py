@@ -2,10 +2,12 @@ import pandas as pd
 import streamlit as st
 import requests
 import folium
-from streamlit_folium import folium_static
+import os
 from opencage.geocoder import OpenCageGeocode
 
-# Replace with your own OpenCage API key
+st.set_page_config(layout="wide")
+
+# If there is a problem with the current API
 OPEN_CAGE_API_KEY = st.secrets["API_KEY"]
 
 # =============================================================================
@@ -39,7 +41,8 @@ def get_geocode(query, api_key=OPEN_CAGE_API_KEY):
         else:
             return None, None
     except Exception as e:
-        return None, None  # Fail silently, prevent API errors from stopping the app
+        st.error(f"Error geocoding {query}: {e}")
+        return None, None
 
 # =============================================================================
 # Main App
@@ -48,69 +51,58 @@ def get_geocode(query, api_key=OPEN_CAGE_API_KEY):
 def main():
     st.title("Clients TESSAN")
 
-    # Load data
+    # Load data and drop rows missing an Address
     data = load_data()
-
-    # ----------------------------------------------------------------------
-    # Sidebar: Multi-Select Department Filter with Search
-    # ----------------------------------------------------------------------
+    data = data.dropna(subset=['Address'])
+    
+    # -----------------------------------------------------------------------------
+    # Sidebar: Filtering BEFORE geocoding
+    # -----------------------------------------------------------------------------
     st.sidebar.header("Filtre")
-
-    # Get unique departments from data
+    
+    # Get unique values for filtering from the CSV data
+    # For example, filter by department ("AdministrativeArea2")
     departments = sorted(data['AdministrativeArea2'].dropna().unique().tolist())
+    
+    placeholder = "Aucun"
+    department_options = [placeholder] + departments
+    selected_departments = st.sidebar.multiselect("Sélectionnez un ou plusieurs départements", department_options, default=[])
+    
+    # If the placeholder is still selected, show an info message and stop
+    if selected_departments == placeholder:
+        st.info("Veuillez choisir un département pour continuer.")
+        st.stop()
 
-    # Multi-select filter: No department selected by default
-    selected_departments = st.sidebar.multiselect(
-        "Sélectionnez un ou plusieurs départements",
-        options=departments,
-        default=[],  # No preselected departments
-    )
+    data = data[data['AdministrativeArea2'].isin(selected_departments)]
 
-    # Wait for the user to select at least one department
-    if not selected_departments:
-        st.info("Veuillez sélectionner au moins un département pour afficher la carte.")
+    # If no data remains after filtering, notify the user and exit
+    if data.empty:
+        st.warning("No data available for the selected filter.")
         return
 
-    # Apply filter to data
-    filtered_data = data[data['AdministrativeArea2'].isin(selected_departments)]
-
-    # If no data remains after filtering, notify the user
-    if filtered_data.empty:
-        st.warning("Aucune donnée disponible après application du filtre.")
-        return
-
-    # ----------------------------------------------------------------------
-    # Geocode Addresses (AFTER filtering)
-    # ----------------------------------------------------------------------
-    if 'lat' not in filtered_data.columns or 'lng' not in filtered_data.columns:
-        filtered_data['lat'], filtered_data['lng'] = None, None
-
-    missing_coords = filtered_data[filtered_data[['lat', 'lng']].isnull().any(axis=1)]
-
-    if not missing_coords.empty:
-        st.info(f"Geocoding {len(missing_coords)} addresses, please wait...")
-        filtered_data.loc[missing_coords.index, ['lat', 'lng']] = missing_coords['Address'].apply(
-            lambda x: pd.Series(get_geocode(x))
-        )
-
+    # -----------------------------------------------------------------------------
+    # Geocode Addresses (only for the filtered data)
+    # -----------------------------------------------------------------------------
+    data[['lat', 'lng']] = data['Address'].apply(lambda x: pd.Series(get_geocode(x)))
+    
     # Remove rows where geocoding failed
-    filtered_data = filtered_data.dropna(subset=['lat', 'lng'])
-
-    if filtered_data.empty:
-        st.warning("Aucune donnée valide après géocodage.")
+    data = data.dropna(subset=['lat', 'lng'])
+    
+    if data.empty:
+        st.warning("No valid geocoding results for the selected data.")
         return
 
-    # ----------------------------------------------------------------------
+    # -----------------------------------------------------------------------------
     # Build and Display the Map using Folium
-    # ----------------------------------------------------------------------
-
+    # -----------------------------------------------------------------------------
+    
     # Load French departments GeoJSON
     geojson_url = 'https://france-geojson.gregoiredavid.fr/repo/departements.geojson'
     departements_geojson = requests.get(geojson_url).json()
 
     # Center the map on the average location of the clients
-    average_lat = filtered_data['lat'].mean()
-    average_lon = filtered_data['lng'].mean()
+    average_lat = data['lat'].mean()
+    average_lon = data['lng'].mean()
     folium_map = folium.Map(location=[average_lat, average_lon], zoom_start=6)
 
     # Add GeoJSON overlay for French departments
@@ -126,11 +118,11 @@ def main():
     ).add_to(folium_map)
 
     # Add markers for each client
-    for _, row in filtered_data.iterrows():
+    for _, row in data.iterrows():
         popup_content = f"""
-        <b>Name:</b> {row['Name']}<br>
-        <b>Address:</b> {row['Address']}<br>
-        <b>Department:</b> {row['AdministrativeArea2']}<br>
+        bName:/b {row['Name']}br
+        bAddress:/b {row['Address']}br
+        bDepartment:/b {row['AdministrativeArea2']}br
         """
         folium.Marker(
             location=[row['lat'], row['lng']],
@@ -139,30 +131,28 @@ def main():
         ).add_to(folium_map)
 
     # Save the map as an HTML file
-    map_filename = "client_map.html"
+    map_filename = 'client_map.html'
     folium_map.save(map_filename)
 
-    # Display the Folium map in Streamlit
-    folium_static(folium_map)
-
-    # ----------------------------------------------------------------------
-    # Download Button for the Map
-    # ----------------------------------------------------------------------
-    with open(map_filename, "r", encoding="utf-8") as file:
+    # Read and display the saved HTML map in the Streamlit app
+    with open(map_filename, 'r', encoding='utf-8') as file:
         html_data = file.read()
 
     st.download_button(
-        label="Télécharger la carte",
+        label="Download Map",
         data=html_data,
-        file_name="client_map.html",
+        file_name=map_filename,
         mime="text/html",
     )
 
-    # ----------------------------------------------------------------------
-    # Display Data Table
-    # ----------------------------------------------------------------------
-    st.subheader("Tableau des Données")
-    st.dataframe(filtered_data[['Name', 'Address', 'AdministrativeArea2', 'lat', 'lng']], height=300)
+    st.metric(label=f"Nombre de dispositifs en {selected_departments}", value=data.Name.unique().size)
+
+    display_dataframe = st.toggle("Voir en détail")
+    columns_to_display = ['Name', 'Address', 'PostalCode', 'Locality', 'AdministrativeArea2']
+    if display_dataframe: 
+        st.dataframe(data[columns_to_display])
+
+    st.components.v1.html(html_data, height=600, scrolling=True)
 
 if __name__ == '__main__':
     main()

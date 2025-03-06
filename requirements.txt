@@ -3,3 +3,4 @@ streamlit
 requests
 folium
 opencage
+streamlit_folium
